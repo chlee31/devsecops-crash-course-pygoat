@@ -112,7 +112,7 @@ jobs:
         ls -la reports/bandit/
         
     - name: Upload Bandit Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: bandit-security-reports
@@ -185,7 +185,7 @@ jobs:
         fi
         
     - name: Upload Docker Scout Reports
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: docker-scout-reports
@@ -219,7 +219,7 @@ jobs:
     
     steps:
     - name: Download All Artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       
     - name: Generate Security Summary Report
       run: |
@@ -273,7 +273,7 @@ jobs:
         cat reports/summary/security-summary.md
         
     - name: Upload Security Summary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: security-summary-report
         path: reports/summary/
@@ -302,9 +302,9 @@ jobs:
         
         # Verify deployment
         if curl -f http://localhost:8080; then
-          echo "✅ Application successfully deployed and accessible at http://localhost:8080"
+          echo "Application successfully deployed and accessible at http://localhost:8080"
         else
-          echo "❌ Application deployment failed"
+          echo "Application deployment failed"
           docker logs pygoat-local
           exit 1
         fi
