@@ -78,13 +78,15 @@ jobs:
         echo "=== RUNNING FULL BANDIT SCAN ==="
         bandit -r . -f json -o bandit-full-report.json || true
         bandit -r . -f txt -o bandit-full-report.txt || true
-        
+        bandit -r . -f csv -o bandit-full-report.csv || true        
+
     - name: Run Bandit SAST Scan (Filtered)
       run: |
         source venv/bin/activate
         echo "=== RUNNING FILTERED BANDIT SCAN ==="
         bandit -r . -c bandit.yaml -f json -o bandit-filtered-report.json || true
         bandit -r . -c bandit.yaml -f txt -o bandit-filtered-report.txt || true
+        bandit -r . -c bandit.yaml -f csv -o bandit-filtered-report.txt || true
         
     - name: Display Bandit Results
       run: |
