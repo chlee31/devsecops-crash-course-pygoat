@@ -25,7 +25,7 @@ jobs:
         echo "Working Directory: $(pwd)"
         echo "Python Version: $(python3 --version)"
         echo "Docker Version: $(docker --version)"
-        echo "Docker Scout Version: $(docker scout version)"
+        echo "Docker Scout Version: $(docker-scout version)"
         echo "Available Disk Space:"
         df -h
         echo "Available Memory:"
@@ -177,12 +177,12 @@ jobs:
     - name: Docker Scout Quick View
       run: |
         echo "=== DOCKER SCOUT QUICKVIEW ==="
-        docker scout quickview ${IMAGE_NAME}:latest || echo "Quickview failed, continuing..."
+        docker-scout quickview ${IMAGE_NAME}:latest || echo "Quickview failed, continuing..."
         
     - name: Docker Scout CVE Analysis (Basic)
       run: |
         echo "=== DOCKER SCOUT CVE ANALYSIS ==="
-        docker scout cves ${IMAGE_NAME}:latest || echo "CVE analysis failed, continuing..."
+        docker-scout cves ${IMAGE_NAME}:latest || echo "CVE analysis failed, continuing..."
         
     - name: Docker Scout CVE Analysis (Detailed)
       run: |
@@ -190,10 +190,10 @@ jobs:
         mkdir -p reports/docker-scout
         
         # Generate different report formats
-        docker scout cves ${IMAGE_NAME}:latest > reports/docker-scout/scout-cves-table.txt 2>&1 || true        
+        docker-scout cves ${IMAGE_NAME}:latest > reports/docker-scout/scout-cves-table.txt 2>&1 || true        
         
         # Filter for high/critical only
-        docker scout cves ${IMAGE_NAME}:latest 2>&1 | grep -E "(CRITICAL|HIGH)" > reports/docker-scout/scout-critical-high.txt || echo "No critical/high issues found or filtering not supported" > reports/docker-scout/scout-critical-high.txt
+        docker-scout cves ${IMAGE_NAME}:latest 2>&1 | grep -E "(CRITICAL|HIGH)" > reports/docker-scout/scout-critical-high.txt || echo "No critical/high issues found or filtering not supported" > reports/docker-scout/scout-critical-high.txt
         
         echo "=== SCOUT REPORTS GENERATED ==="
         ls -la reports/docker-scout/
