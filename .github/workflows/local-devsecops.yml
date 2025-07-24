@@ -41,6 +41,11 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y postgresql-client libpq-dev python3-dev
+        
     - name: Set up Python Environment
       run: |
         python3 -m venv venv
@@ -78,15 +83,15 @@ jobs:
         echo "=== RUNNING FULL BANDIT SCAN ==="
         bandit -r . -f json -o bandit-full-report.json || true
         bandit -r . -f txt -o bandit-full-report.txt || true
-        bandit -r . -f csv -o bandit-full-report.csv || true        
-
+        bandit -r . -f csv -o bandit-full-report.csv || true
+        
     - name: Run Bandit SAST Scan (Filtered)
       run: |
         source venv/bin/activate
         echo "=== RUNNING FILTERED BANDIT SCAN ==="
         bandit -r . -c bandit.yaml -f json -o bandit-filtered-report.json || true
         bandit -r . -c bandit.yaml -f txt -o bandit-filtered-report.txt || true
-        bandit -r . -c bandit.yaml -f csv -o bandit-filtered-report.txt || true
+        bandit -r . -c bandit.yaml -f csv -o bandit-filtered-report.csv || true
         
     - name: Display Bandit Results
       run: |
@@ -160,10 +165,10 @@ jobs:
         echo "=== DOCKER SCOUT DETAILED CVE ANALYSIS ==="
         mkdir -p reports/docker-scout
         
-        # Generate different report formats
-        docker scout cves ${IMAGE_NAME}:latest > reports/docker-scout/scout-cves-table.txt 2>&1 || true        
+        # Generate different report formats (simplified for compatibility)
+        docker scout cves ${IMAGE_NAME}:latest > reports/docker-scout/scout-cves-table.txt 2>&1 || true
         
-        # Filter for high/critical only
+        # Try to get critical/high severity only (fallback if flags don't work)
         docker scout cves ${IMAGE_NAME}:latest 2>&1 | grep -E "(CRITICAL|HIGH)" > reports/docker-scout/scout-critical-high.txt || echo "No critical/high issues found or filtering not supported" > reports/docker-scout/scout-critical-high.txt
         
         echo "=== SCOUT REPORTS GENERATED ==="
@@ -192,26 +197,42 @@ jobs:
     - name: Test Application Locally
       run: |
         echo "=== TESTING APPLICATION LOCALLY ==="
-        # Start container in background with proper port mapping
-        CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest python manage.py runserver 0.0.0.0:8000)
+        
+        # First check container structure to find manage.py
+        echo "=== CHECKING CONTAINER STRUCTURE ==="
+        docker run --rm ${IMAGE_NAME}:latest find /app -name "manage.py" -type f || echo "manage.py not found in /app"
+        docker run --rm ${IMAGE_NAME}:latest ls -la /app || echo "Cannot list /app"
+        
+        # Start container in background with proper command
+        if docker run --rm ${IMAGE_NAME}:latest test -f /app/manage.py; then
+          echo "Found manage.py in /app"
+          CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest python manage.py runserver 0.0.0.0:8000)
+        elif docker run --rm ${IMAGE_NAME}:latest test -f /app/pygoat/manage.py; then
+          echo "Found manage.py in /app/pygoat"
+          CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest python pygoat/manage.py runserver 0.0.0.0:8000)
+        else
+          echo "Cannot find manage.py, using default container command"
+          CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest)
+        fi
+        
         echo "Started container: $CONTAINER_ID"
-    
+        
         # Wait for application to start
         sleep 15
-    
+        
         # Test if application is responding
         curl -f http://localhost:8000 || echo "Application health check failed - this is expected for PyGoat"
-    
+        
         # Show container logs for debugging
         echo "=== Container Logs ==="
         docker logs $CONTAINER_ID
-    
+        
         # Stop the test container
         docker stop $CONTAINER_ID
         docker rm $CONTAINER_ID
-    
+        
         echo "Local testing completed"
- 
+
   # Job 4: Security Report Analysis
   security-analysis:
     name: Security Analysis & Reporting
@@ -291,22 +312,40 @@ jobs:
     - name: Deploy Application Locally
       run: |
         echo "=== DEPLOYING APPLICATION LOCALLY ==="
-    
+        
         # Stop any existing PyGoat containers
         docker stop pygoat-local 2>/dev/null || true
         docker rm pygoat-local 2>/dev/null || true
-    
-        # Start new container with Django runserver instead of gunicorn
-         docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest python manage.py runserver 0.0.0.0:8000
-    
+        
+        # First, let's check the container structure
+        echo "=== CHECKING CONTAINER STRUCTURE ==="
+        docker run --rm local-pygoat:latest find /app -name "manage.py" -type f || echo "manage.py not found in /app"
+        docker run --rm local-pygoat:latest ls -la /app || echo "Cannot list /app"
+        
+        # Try different startup commands based on what we find
+        echo "=== TRYING TO START APPLICATION ==="
+        if docker run --rm local-pygoat:latest test -f /app/manage.py; then
+          echo "Found manage.py in /app, using: python manage.py runserver"
+          docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest python manage.py runserver 0.0.0.0:8000
+        elif docker run --rm local-pygoat:latest test -f /app/pygoat/manage.py; then
+          echo "Found manage.py in /app/pygoat, using: python pygoat/manage.py runserver"
+          docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest python pygoat/manage.py runserver 0.0.0.0:8000
+        else
+          echo "Cannot find manage.py, checking container entrypoint"
+          docker run --rm local-pygoat:latest ls -la /
+          # Fallback: try to run without specifying command (use default from Dockerfile)
+          docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest
+        fi
+        
         # Wait for startup
         sleep 20
-    
+        
         # Verify deployment
         if curl -f http://localhost:8080 2>/dev/null; then
           echo "✅ Application successfully deployed and accessible at http://localhost:8080"
         else
           echo "❌ Application deployment failed or not responding"
+          echo "=== Container Logs ==="
           docker logs pygoat-local
         fi
         
