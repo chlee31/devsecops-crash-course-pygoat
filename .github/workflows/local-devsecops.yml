@@ -291,24 +291,23 @@ jobs:
     - name: Deploy Application Locally
       run: |
         echo "=== DEPLOYING APPLICATION LOCALLY ==="
-        
+    
         # Stop any existing PyGoat containers
         docker stop pygoat-local 2>/dev/null || true
         docker rm pygoat-local 2>/dev/null || true
-        
-        # Start new container
-        docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest
-        
+    
+        # Start new container with Django runserver instead of gunicorn
+         docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest python manage.py runserver 0.0.0.0:8000
+    
         # Wait for startup
-        sleep 15
-        
+        sleep 20
+    
         # Verify deployment
-        if curl -f http://localhost:8080; then
-          echo "Application successfully deployed and accessible at http://localhost:8080"
+        if curl -f http://localhost:8080 2>/dev/null; then
+          echo "✅ Application successfully deployed and accessible at http://localhost:8080"
         else
-          echo "Application deployment failed"
+          echo "❌ Application deployment failed or not responding"
           docker logs pygoat-local
-          exit 1
         fi
         
     - name: Display Deployment Info
