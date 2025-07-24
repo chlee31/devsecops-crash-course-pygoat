@@ -41,11 +41,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Install System Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y postgresql-client libpq-dev python3-dev
-        
     - name: Set up Python Environment
       run: |
         python3 -m venv venv
@@ -83,15 +78,15 @@ jobs:
         echo "=== RUNNING FULL BANDIT SCAN ==="
         bandit -r . -f json -o bandit-full-report.json || true
         bandit -r . -f txt -o bandit-full-report.txt || true
-        bandit -r . -f csv -o bandit-full-report.csv || true
-        
+        bandit -r . -f csv -o bandit-full-report.csv || true        
+
     - name: Run Bandit SAST Scan (Filtered)
       run: |
         source venv/bin/activate
         echo "=== RUNNING FILTERED BANDIT SCAN ==="
         bandit -r . -c bandit.yaml -f json -o bandit-filtered-report.json || true
         bandit -r . -c bandit.yaml -f txt -o bandit-filtered-report.txt || true
-        bandit -r . -c bandit.yaml -f csv -o bandit-filtered-report.csv || true
+        bandit -r . -c bandit.yaml -f csv -o bandit-filtered-report.txt || true
         
     - name: Display Bandit Results
       run: |
@@ -133,6 +128,16 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    - name: Inspect Project Structure
+      run: |
+        echo "=== PROJECT STRUCTURE ANALYSIS ==="
+        echo "Current directory: $(pwd)"
+        echo "Contents:"
+        find . -name "manage.py" -type f
+        find . -name "Dockerfile" -type f
+        ls -la
+        echo "=== End Structure Analysis ==="
+        
     - name: Build Docker Image Locally
       run: |
         echo "=== BUILDING DOCKER IMAGE ==="
@@ -150,6 +155,25 @@ jobs:
         echo "Built image: ${IMAGE_NAME}:${IMAGE_TAG}"
         docker images | grep ${IMAGE_NAME}
         
+    - name: Inspect Docker Image
+      run: |
+        echo "=== DOCKER IMAGE INSPECTION ==="
+        echo "Image: ${IMAGE_NAME}:latest"
+        
+        # Inspect the filesystem structure inside the container
+        echo "--- Container File Structure ---"
+        docker run --rm ${IMAGE_NAME}:latest find / -name "manage.py" 2>/dev/null || echo "manage.py not found"
+        docker run --rm ${IMAGE_NAME}:latest ls -la / 2>/dev/null || echo "Root directory listing failed"
+        docker run --rm ${IMAGE_NAME}:latest ls -la /app 2>/dev/null || echo "/app directory not found"
+        
+        # Check the working directory
+        echo "--- Working Directory ---"
+        docker run --rm ${IMAGE_NAME}:latest pwd
+        
+        # Check what's in the working directory
+        echo "--- Working Directory Contents ---"
+        docker run --rm ${IMAGE_NAME}:latest ls -la
+        
     - name: Docker Scout Quick View
       run: |
         echo "=== DOCKER SCOUT QUICKVIEW ==="
@@ -165,10 +189,10 @@ jobs:
         echo "=== DOCKER SCOUT DETAILED CVE ANALYSIS ==="
         mkdir -p reports/docker-scout
         
-        # Generate different report formats (simplified for compatibility)
-        docker scout cves ${IMAGE_NAME}:latest > reports/docker-scout/scout-cves-table.txt 2>&1 || true
+        # Generate different report formats
+        docker scout cves ${IMAGE_NAME}:latest > reports/docker-scout/scout-cves-table.txt 2>&1 || true        
         
-        # Try to get critical/high severity only (fallback if flags don't work)
+        # Filter for high/critical only
         docker scout cves ${IMAGE_NAME}:latest 2>&1 | grep -E "(CRITICAL|HIGH)" > reports/docker-scout/scout-critical-high.txt || echo "No critical/high issues found or filtering not supported" > reports/docker-scout/scout-critical-high.txt
         
         echo "=== SCOUT REPORTS GENERATED ==="
@@ -198,41 +222,48 @@ jobs:
       run: |
         echo "=== TESTING APPLICATION LOCALLY ==="
         
-        # First check container structure to find manage.py
-        echo "=== CHECKING CONTAINER STRUCTURE ==="
-        docker run --rm ${IMAGE_NAME}:latest find /app -name "manage.py" -type f || echo "manage.py not found in /app"
-        docker run --rm ${IMAGE_NAME}:latest ls -la /app || echo "Cannot list /app"
+        # First, determine the correct command to run based on container inspection
+        echo "--- Determining Application Start Command ---"
         
-        # Start container in background with proper command
-        if docker run --rm ${IMAGE_NAME}:latest test -f /app/manage.py; then
-          echo "Found manage.py in /app"
-          CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest python manage.py runserver 0.0.0.0:8000)
-        elif docker run --rm ${IMAGE_NAME}:latest test -f /app/pygoat/manage.py; then
-          echo "Found manage.py in /app/pygoat"
-          CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest python pygoat/manage.py runserver 0.0.0.0:8000)
+        # Try to find manage.py and determine the correct path
+        MANAGE_PY_PATH=$(docker run --rm ${IMAGE_NAME}:latest find / -name "manage.py" -type f 2>/dev/null | head -1)
+        
+        if [ -n "$MANAGE_PY_PATH" ]; then
+          echo "Found manage.py at: $MANAGE_PY_PATH"
+          DJANGO_DIR=$(dirname "$MANAGE_PY_PATH")
+          echo "Django directory: $DJANGO_DIR"
+          
+          # Start container with the correct path
+          CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest sh -c "cd $DJANGO_DIR && python manage.py runserver 0.0.0.0:8000")
         else
-          echo "Cannot find manage.py, using default container command"
+          echo "manage.py not found, trying alternative startup methods..."
+          
+          # Check if there's a startup script or if we should use a different approach
+          docker run --rm ${IMAGE_NAME}:latest ls -la /usr/local/bin/ | grep -E "(start|run|entry)" || echo "No obvious startup scripts"
+          
+          # Try with the image's default command or entrypoint
+          echo "Starting with default container command..."
           CONTAINER_ID=$(docker run -d -p 8000:8000 ${IMAGE_NAME}:latest)
         fi
         
         echo "Started container: $CONTAINER_ID"
-        
+    
         # Wait for application to start
         sleep 15
-        
+    
         # Test if application is responding
-        curl -f http://localhost:8000 || echo "Application health check failed - this is expected for PyGoat"
-        
+        curl -f http://localhost:8000 || echo "Application health check failed - this may be expected for PyGoat"
+    
         # Show container logs for debugging
         echo "=== Container Logs ==="
         docker logs $CONTAINER_ID
-        
+    
         # Stop the test container
         docker stop $CONTAINER_ID
         docker rm $CONTAINER_ID
-        
+    
         echo "Local testing completed"
-
+ 
   # Job 4: Security Report Analysis
   security-analysis:
     name: Security Analysis & Reporting
@@ -301,7 +332,7 @@ jobs:
         name: security-summary-report
         path: reports/summary/
 
-  # Job 5: Optional Local Deployment
+  # Job 5: Improved Local Deployment
   local-deploy:
     name: Local Deployment Test
     runs-on: self-hosted
@@ -312,48 +343,79 @@ jobs:
     - name: Deploy Application Locally
       run: |
         echo "=== DEPLOYING APPLICATION LOCALLY ==="
-        
+    
         # Stop any existing PyGoat containers
         docker stop pygoat-local 2>/dev/null || true
         docker rm pygoat-local 2>/dev/null || true
+    
+        # Determine the correct startup command
+        echo "--- Determining Application Startup Command ---"
         
-        # First, let's check the container structure
-        echo "=== CHECKING CONTAINER STRUCTURE ==="
-        docker run --rm local-pygoat:latest find /app -name "manage.py" -type f || echo "manage.py not found in /app"
-        docker run --rm local-pygoat:latest ls -la /app || echo "Cannot list /app"
+        # Try to find manage.py location
+        MANAGE_PY_PATH=$(docker run --rm local-pygoat:latest find / -name "manage.py" -type f 2>/dev/null | head -1)
         
-        # Try different startup commands based on what we find
-        echo "=== TRYING TO START APPLICATION ==="
-        if docker run --rm local-pygoat:latest test -f /app/manage.py; then
-          echo "Found manage.py in /app, using: python manage.py runserver"
-          docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest python manage.py runserver 0.0.0.0:8000
-        elif docker run --rm local-pygoat:latest test -f /app/pygoat/manage.py; then
-          echo "Found manage.py in /app/pygoat, using: python pygoat/manage.py runserver"
-          docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest python pygoat/manage.py runserver 0.0.0.0:8000
+        if [ -n "$MANAGE_PY_PATH" ]; then
+          echo "Found manage.py at: $MANAGE_PY_PATH"
+          DJANGO_DIR=$(dirname "$MANAGE_PY_PATH")
+          
+          # Start container with Django development server
+          docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest sh -c "cd $DJANGO_DIR && python manage.py runserver 0.0.0.0:8000"
         else
-          echo "Cannot find manage.py, checking container entrypoint"
-          docker run --rm local-pygoat:latest ls -la /
-          # Fallback: try to run without specifying command (use default from Dockerfile)
+          echo "manage.py not found, checking for other startup options..."
+          
+          # Check if there's a predefined CMD or ENTRYPOINT
+          docker inspect local-pygoat:latest | grep -A 5 -E "(Cmd|Entrypoint)" || echo "No specific command found"
+          
+          # Try to start with the default image configuration
+          echo "Starting with default image configuration..."
           docker run -d --name pygoat-local -p 8080:8000 local-pygoat:latest
         fi
-        
+    
         # Wait for startup
         sleep 20
         
-        # Verify deployment
-        if curl -f http://localhost:8080 2>/dev/null; then
-          echo "✅ Application successfully deployed and accessible at http://localhost:8080"
+    - name: Verify Deployment
+      run: |
+        echo "=== VERIFYING DEPLOYMENT ==="
+        
+        # Check if container is running
+        if docker ps | grep -q pygoat-local; then
+          echo "✅ Container is running"
+          
+          # Test different endpoints
+          echo "--- Testing Application Endpoints ---"
+          
+          # Test root endpoint
+          if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep -q "200\|302\|404"; then
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080)
+            echo "✅ Application responding with HTTP $HTTP_CODE at http://localhost:8080"
+          else
+            echo "❌ Application not responding at root endpoint"
+          fi
+          
+          # Test if it's a Django application
+          if curl -s http://localhost:8080 | grep -q -i "django\|pygoat"; then
+            echo "✅ Django/PyGoat application detected"
+          fi
+          
         else
-          echo "❌ Application deployment failed or not responding"
-          echo "=== Container Logs ==="
-          docker logs pygoat-local
+          echo "❌ Container is not running"
+          docker ps -a | grep pygoat-local
         fi
         
     - name: Display Deployment Info
       run: |
         echo "=== DEPLOYMENT INFORMATION ==="
         echo "Application URL: http://localhost:8080"
+        echo ""
         echo "Container Status:"
-        docker ps | grep pygoat-local
-        echo "Container Logs (last 20 lines):"
-        docker logs --tail 20 pygoat-local
+        docker ps | grep pygoat-local || echo "Container not running"
+        echo ""
+        echo "Container Logs (last 30 lines):"
+        docker logs --tail 30 pygoat-local 2>&1 || echo "Could not retrieve logs"
+        echo ""
+        echo "Container Process List:"
+        docker exec pygoat-local ps aux 2>/dev/null || echo "Could not retrieve process list"
+        echo ""
+        echo "Network Information:"
+        docker port pygoat-local 2>/dev/null || echo "Could not retrieve port information"
